@@ -115,6 +115,23 @@ static void init_all(init_status *s)
     s->netctl_init = sceNetCtlInit();
 }
 
+/*
+ * sceAvPlayerInit returns an opaque handle that on Vita is a heap pointer, so
+ * it can have bit 31 set and read as "negative" though it is perfectly valid.
+ * Do NOT treat a negative handle as failure (an early hardware run showed
+ * handle=0x81348FC0, a real pointer, being misread as an error). Only reject a
+ * null handle or the documented SceAvPlayer error page (0x806A00xx).
+ */
+static int handle_is_valid(SceAvPlayerHandle h)
+{
+    uint32_t u = (uint32_t)h;
+    if (h == 0)
+        return 0;
+    if ((u & 0xFFFFFF00u) == 0x806A0000u)
+        return 0;
+    return 1;
+}
+
 static SceAvPlayerHandle start_player(init_status *s)
 {
     SceAvPlayerInitData data;
@@ -134,7 +151,7 @@ static SceAvPlayerHandle start_player(init_status *s)
 
     h = sceAvPlayerInit(&data);
     s->player_handle = h;
-    if (h < 0)
+    if (!handle_is_valid(h))
         return h;
 
     s->add_source = sceAvPlayerAddSource(h, STREAM_URL);
@@ -221,7 +238,7 @@ int main(void)
             break;
         prev = pad;
 
-        if (player >= 0 && sceAvPlayerIsActive(player)) {
+        if (handle_is_valid(player) && sceAvPlayerIsActive(player)) {
             SceAvPlayerFrameInfo vf, af;
 
             if (sceAvPlayerGetVideoData(player, &vf)) {
@@ -256,11 +273,13 @@ int main(void)
         vita2d_pvf_draw_textf(font, 20, 116, COLOR_TEXT, 0.9f,
             "netInit=%d netCtlInit=%d", st.net_init, st.netctl_init);
         vita2d_pvf_draw_textf(font, 20, 140,
-            st.player_handle >= 0 ? COLOR_OK : COLOR_ERR, 0.9f,
-            "avPlayerInit handle=%d  addSource=%d  start=%d",
-            st.player_handle, st.add_source, st.start);
+            handle_is_valid(st.player_handle) ? COLOR_OK : COLOR_ERR, 0.9f,
+            "avPlayerInit handle=0x%08X (%s)  addSource=%d  start=%d",
+            (unsigned)st.player_handle,
+            handle_is_valid(st.player_handle) ? "valid" : "error",
+            st.add_source, st.start);
 
-        if (player >= 0) {
+        if (handle_is_valid(player)) {
             vita2d_pvf_draw_textf(font, 20, 172, COLOR_TEXT, 0.9f,
                 "active=%d  currentTime=%llu ms",
                 (int)sceAvPlayerIsActive(player),
@@ -283,7 +302,7 @@ int main(void)
         vita2d_swap_buffers();
     }
 
-    if (player >= 0) {
+    if (handle_is_valid(player)) {
         sceAvPlayerStop(player);
         sceAvPlayerClose(player);
     }

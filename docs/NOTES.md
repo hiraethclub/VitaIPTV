@@ -232,6 +232,16 @@ a fixed max level); the real hardware burden is resolution, so key the decoder
 ceiling on resolution first, level second. Segments are MPEG-TS, so this stream
 also exercises the future hand-written TS demuxer.
 
+**Hardware finding (first run, 2026-09-22):** all sysmodules loaded (0), net
+init 0, but `sceAvPlayerInit` returned `handle = -2127261760 = 0x81348FC0`. That
+is not an error code (SceAvPlayer errors are `0x806A00xx`) - it is a **heap
+pointer**, i.e. the handle is an opaque pointer with bit 31 set, so it reads as
+negative in a signed `int`. The header's "< 0 on error" contract does not hold.
+Fixed: `handle_is_valid()` now accepts any non-null handle except the
+`0x806A00xx` error page, and the app no longer bails out on a "negative" handle,
+so `AddSource`/`Start` and the frame loop actually run. HUD now shows the handle
+in hex. Awaiting the next run to see whether frames flow.
+
 **Unverified assumptions in the smoke test (confirm on device):**
 
 1. SceAvPlayer memory/texture callbacks satisfied by plain `memalign` main RAM.
