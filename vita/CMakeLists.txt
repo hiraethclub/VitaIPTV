@@ -30,6 +30,11 @@ target_link_libraries(vitaiptv_vita
     SceCommonDialog_stub
     SceAppMgr_stub
     SceKernelDmacMgr_stub
+    # playback + networking (M2 smoke test)
+    SceAvPlayer_stub
+    SceNet_stub
+    SceNetCtl_stub
+    SceAudio_stub
 )
 
 vita_create_self(eboot.bin vitaiptv_vita)

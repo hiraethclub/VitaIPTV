@@ -206,6 +206,40 @@ happens on device. Cheap way to learn whether Sony's player copes with live HLS
 at all, and a baseline for A/V behaviour. Not the foundation to build on given
 the reported instability and VOD-oriented API.
 
+### Smoke test (approach B) - built, awaiting a hardware run
+
+`vita/src/main.c` is now the SceAvPlayer smoke test. It loads the net/http/ssl/
+https/avplayer sysmodules, inits net, calls `sceAvPlayerInit` +
+`sceAvPlayerAddSource(url)` + `sceAvPlayerStart`, then each frame pulls
+`sceAvPlayerGetVideoData`/`GetAudioData`. Every step's return code and the live
+state (active, currentTime, video frames + WxH, audio frames + ch/rate, last
+event id) are drawn as an on-screen HUD, and the decoded luma (Y) plane is shown
+as grayscale as format-robust proof that frames are really decoding. Audio is
+drained but not yet output (kept out to shrink the untested surface).
+
+**Chosen test stream** (verified 2026-09-22 with curl + ffprobe: H.264 Main /
+AAC-LC, variants 360p/540p/720p, live, no special User-Agent, not geo-blocked):
+
+- FailArmy UK: `https://failarmy-international-gb.samsung.wurl.tv/playlist.m3u8`
+
+Alternates (H.264 HLS, include a 1080p variant for ceiling testing):
+
+- CNBC UK: `https://amg01079-nbcuuk-amg01079c2-samsung-gb-1258.playouts.now.amagi.tv/playlist.m3u8`
+- GB News: `https://amg01076-lightningintern-gbnewsau-samsungau-et7fz.amagi.tv/playlist/amg01076-lightningintern-gbnewsau-samsungau/playlist.m3u8`
+
+Note: the codec string reports level 4.1 even on the 360p variant (encoders tag
+a fixed max level); the real hardware burden is resolution, so key the decoder
+ceiling on resolution first, level second. Segments are MPEG-TS, so this stream
+also exercises the future hand-written TS demuxer.
+
+**Unverified assumptions in the smoke test (confirm on device):**
+
+1. SceAvPlayer memory/texture callbacks satisfied by plain `memalign` main RAM.
+2. `basePriority = 0xA0` and `numOutputVideoFrameBuffers = 2` are workable.
+3. Luma preview assumes source row stride == frame width (a sheared image on
+   device means the true stride differs and must be read).
+4. That SceAvPlayer copes with live HLS at all - the whole point of the test.
+
 **Open decision for you:** the demux stage in A - vendor a minimal FFmpeg
 (more formats, build cost, GPL) vs. write a small MPEG-TS + basic HLS demuxer
 in C (less code we don't control, but more to write and test). I lean toward a
