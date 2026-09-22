@@ -214,13 +214,42 @@ plain HLS/TS, and add FFmpeg only if real streams demand it.
 
 ---
 
-## 5. Must-be-tested-on-hardware (cannot verify from here)
+## 5. M0 skeleton status
 
-1. **Decoder ceiling.** Sources disagree (720p/L3.1 vs 1080p/L4.0). Must be
-   probed on the actual PCH-1000 by trying known 720p and 1080p H.264 streams
-   and reading the `sceAvcdec*` error codes.
-2. **System clock / TLS.** Confirm HTTPS cert validation succeeds (correct RTC);
+- The full VitaSDK build chain works in this container: `core/` compiles under
+  `arm-vita-eabi-gcc` 15.2.0, links with vita2d, and packs to a real
+  **`vitaiptv.vpk`** (velf -> self -> eboot.bin -> param.sfo -> vpk). Built
+  with `cmake -DCMAKE_TOOLCHAIN_FILE=$VITASDK/share/vita.toolchain.cmake`.
+- The app (`vita/src/main.c`) brings up vita2d, draws status text, and parses a
+  small embedded playlist with the portable core to prove core runs on device.
+  Exits cleanly on START.
+- Title ID: placeholder **`VIPTV0001`** (a final unique one is an M5 task).
+- The VPK currently contains only `param.sfo` + `eboot.bin`: **no LiveArea/icon
+  assets yet** (M5), so it installs and runs but shows a default tile.
+
+### Deploy (tools/deploy.sh)
+
+Targets vitacompanion (verified protocol: FTP **1337**, control **1338**,
+`launch <TITLEID>` / `quit <TITLEID>`, files via `curl -T`). Fast loop uploads
+`eboot.bin` into `ux0:/app/VIPTV0001/` and relaunches; `vpk` mode uploads the
+VPK for manual VitaShell install. The Vita IP comes from `$VITA_IP` or a
+gitignored `tools/deploy.conf` and is never committed. vitacompanion has no
+built-in network log; the `log` subcommand listens for UDP debugnet output (the
+app must be built with debugnet for that, not wired up yet).
+
+## 6. Must-be-tested-on-hardware (cannot verify from here)
+
+1. **M0 VPK installs and runs.** Install `vitaiptv.vpk` via VitaShell; confirm
+   it launches, shows the status screen, and exits on START.
+2. **Font / Welsh glyphs.** The status screen prints `Sŵn a Llŷn`
+   using the default PVF system font. Confirm the `ŵ`/`ŷ` render (if
+   not, a bundled font with Latin Extended coverage is needed for the UI).
+3. **Decoder ceiling.** Sources disagree (720p/L3.1 vs 1080p/L4.0). Probe on the
+   actual PCH-1000 by trying known 720p and 1080p H.264 streams and reading the
+   `sceAvcdec*` error codes.
+4. **System clock / TLS.** Confirm HTTPS cert validation succeeds (correct RTC);
    watch for `SCE_HTTPS_ERROR_SSL_NOT_BEFORE/AFTER`.
-3. **Live HLS via SceAvPlayer** (approach B) - does it play or fall over?
-4. **Parse time for index.m3u on device** - expected to be much slower than the
+5. **Live HLS via SceAvPlayer** (the agreed next smoke test) - does it play or
+   fall over?
+6. **Parse time for index.m3u on device** - expected to be much slower than the
    ~12 ms measured on PC.
