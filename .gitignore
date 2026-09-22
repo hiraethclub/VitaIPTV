@@ -1,0 +1,27 @@
+# Build directories
+/build/
+/build-vita/
+build*/
+
+# Local device configuration - NEVER commit the Vita's IP or credentials
+tools/deploy.conf
+.vitaip
+*.local
+
+# Large test playlists (fetch with tools/fetch-playlists.sh).
+# gb-wls.m3u is kept as a small committed fixture.
+/tests/data/uk.m3u
+/tests/data/news.m3u
+/tests/data/index.m3u
+
+# Vita build artifacts
+*.velf
+*.self
+*.vpk
+param.sfo
+
+# Editor / OS cruft
+*.o
+*.a
+.DS_Store
+compile_commands.json
