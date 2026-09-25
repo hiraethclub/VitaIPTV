@@ -10,5 +10,14 @@ add_test(NAME vitaiptv_test COMMAND vitaiptv_test)
 set_tests_properties(vitaiptv_test PROPERTIES
     ENVIRONMENT "VITAIPTV_TEST_DATA=${CMAKE_SOURCE_DIR}/tests/data")
 
+add_executable(vitaiptv_hls_test test_hls.c)
+target_link_libraries(vitaiptv_hls_test PRIVATE vicore)
+if(NOT MSVC)
+    target_compile_options(vitaiptv_hls_test PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME vitaiptv_hls_test COMMAND vitaiptv_hls_test)
+set_tests_properties(vitaiptv_hls_test PROPERTIES
+    ENVIRONMENT "VITAIPTV_TEST_DATA=${CMAKE_SOURCE_DIR}/tests/data")
+
 add_executable(bench_m3u bench_m3u.c)
 target_link_libraries(bench_m3u PRIVATE vicore)

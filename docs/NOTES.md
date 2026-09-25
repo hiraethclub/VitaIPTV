@@ -232,15 +232,24 @@ a fixed max level); the real hardware burden is resolution, so key the decoder
 ceiling on resolution first, level second. Segments are MPEG-TS, so this stream
 also exercises the future hand-written TS demuxer.
 
-**Hardware finding (first run, 2026-09-22):** all sysmodules loaded (0), net
-init 0, but `sceAvPlayerInit` returned `handle = -2127261760 = 0x81348FC0`. That
-is not an error code (SceAvPlayer errors are `0x806A00xx`) - it is a **heap
-pointer**, i.e. the handle is an opaque pointer with bit 31 set, so it reads as
-negative in a signed `int`. The header's "< 0 on error" contract does not hold.
-Fixed: `handle_is_valid()` now accepts any non-null handle except the
-`0x806A00xx` error page, and the app no longer bails out on a "negative" handle,
-so `AddSource`/`Start` and the frame loop actually run. HUD now shows the handle
-in hex. Awaiting the next run to see whether frames flow.
+**Hardware finding 1 (2026-09-22):** `sceAvPlayerInit` returned
+`handle = 0x81348FC0`, a **heap pointer** with bit 31 set, not an error code
+(SceAvPlayer errors are `0x806A00xx`). The header's "< 0 on error" contract does
+not hold; the handle is an opaque pointer. Fixed `handle_is_valid()` to accept
+any non-null handle except the `0x806A00xx` error page.
+
+**Hardware finding 2 (2026-09-25) - SceAvPlayer ruled out for live HLS.** With
+the handle fixed, `sceAvPlayerAddSource(handle, <FailArmy HLS url>)` returns
+`0x806A0002` and `sceAvPlayerStart` then returns the same (no source). `init`
+succeeded with the identical memory callbacks, so this is the **source being
+rejected**, not a setup bug, and `0x806A0002` is distinct from out-of-memory
+(`0x806A0003`), so it is not an allocation failure. Corroborating evidence:
+every SceAvPlayer-based Vita project is MP4-only (SonicMastr/ReAvPlayer enables
+1080p **MP4**; SonicMastr/Vita-Media-Player is an **MP4** player), while the one
+live-streaming Vita client (GrapheneCt/NetStream) is a bespoke player, not a
+SceAvPlayer wrapper. Conclusion: **stock SceAvPlayer does not play live HLS**;
+we go to the custom pipeline (approach A). The smoke test in `vita/src/main.c`
+stays in git as the record of this experiment.
 
 **Unverified assumptions in the smoke test (confirm on device):**
 
