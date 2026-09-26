@@ -290,6 +290,46 @@ gitignored `tools/deploy.conf` and is never committed. vitacompanion has no
 built-in network log; the `log` subcommand listens for UDP debugnet output (the
 app must be built with debugnet for that, not wired up yet).
 
+## 5b. Custom HLS pipeline - first device build (M2/M3)
+
+The full custom pipeline is built and packs to a VPK. It is **unverified on
+hardware** (no Vita in CI); every stage logs via `vi_log` so one run shows how
+far it gets.
+
+Flow (worker thread does network + demux + decode; main thread renders):
+`SceHttp GET` -> `vi_hls` master/variant/media parse -> segment `GET` ->
+`vi_ts` demux -> `vi_h264` SPS -> `vi_vdec` (SceVideodec) -> vita2d texture.
+
+Portable layers (`core/`) are all unit-tested here. Device glue (`vita/`):
+
+- `vi_http`: SceHttp GET into a buffer. **Debug: TLS certificate verification is
+  disabled** (`sceHttpsDisableOption`) so a wrong device clock / missing CA
+  cannot block testing - logged loudly, must be revisited (section 3 has the
+  proper SceHttp verification flags).
+- `vi_vdec`: SceVideodec H.264 -> RGBA into a double-buffered vita2d texture.
+  The exact flow (init dims rounded up to 16, `numOfRefFrames=4`,
+  `USER_MAIN_PHYCONT_NC_RW` frame buffer rounded to 1 MiB, per-frame
+  `SceAvcdecArrayPicture` with `pPicture[0]` = texture data, `pixelType=0`
+  RGBA8888) is adapted from the **Moonlight Vita client** (GPL-3.0), verified
+  against `psp2/videodec.h`. Our project is GPL-3.0, so this is fine.
+- Decoder is created on the **main (GXM-owning) thread** via a request/handshake
+  to avoid cross-thread vita2d texture allocation.
+- Resolution ceiling enforced from the SPS (<= 1280x720 for now); a larger
+  stream is refused with an on-screen message rather than a decoder crash.
+- Audio is demuxed and counted but **not yet played** (next step: AAC via
+  SceAudiodec -> SceAudioOut, and PTS-based A/V sync; current video pacing is a
+  fixed ~33 ms).
+
+### Logging system
+
+- On-screen HUD: state line, counters (segments, KiB, video AUs, audio frames,
+  decoded frames), and the last ~12 log lines coloured by level. TRIANGLE
+  toggles the HUD; it always shows until the first frame.
+- Optional PC-side logs over UDP: create `ux0:data/vitaiptv/pc_ip.txt`
+  containing your PC's LAN IP (optionally `IP:port`, default port 18194) and run
+  `tools/deploy.sh log` (a UDP listener) on the PC. If the file is absent,
+  on-screen logging still works.
+
 ## 6. Must-be-tested-on-hardware (cannot verify from here)
 
 1. **M0 VPK installs and runs.** Install `vitaiptv.vpk` via VitaShell; confirm
