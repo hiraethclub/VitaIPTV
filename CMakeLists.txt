@@ -21,6 +21,7 @@ add_library(vicore STATIC
     core/vi_playlist.c
     core/vi_m3u.c
     core/vi_hls.c
+    core/vi_log.c
 )
 target_include_directories(vicore PUBLIC core)
 if(NOT MSVC)
