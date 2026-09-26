@@ -343,7 +343,7 @@ int main(void)
     vi_ts_init(&g_demux, on_ts_sample, NULL);
 
     worker = sceKernelCreateThread("vi_worker", worker_thread,
-                                   0x10000100, 0x20000, 0, 0, NULL);
+                                   0x10000100, 0x40000, 0, 0, NULL);
     if (worker >= 0)
         sceKernelStartThread(worker, 0, NULL);
     else
@@ -389,16 +389,11 @@ int main(void)
         vita2d_swap_buffers();
     }
 
+    /* The worker may be blocked in a network read; do not wait on it (that
+     * could hang exit). Signal stop and let the process teardown reclaim
+     * everything - avoids racing the worker's decode against vita2d_fini. */
     g_running = 0;
-    if (worker >= 0)
-        sceKernelWaitThreadEnd(worker, NULL, NULL);
-
-    if (g_vdec)
-        vi_vdec_destroy(g_vdec);
-    vi_ts_free(&g_demux);
-    vi_http_term();
-    vita2d_fini();
-    vita2d_free_pvf(font);
+    (void)worker;
     sceKernelExitProcess(0);
     return 0;
 }
