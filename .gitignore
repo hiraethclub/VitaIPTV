@@ -13,6 +13,10 @@ tools/deploy.conf
 /tests/data/uk.m3u
 /tests/data/news.m3u
 /tests/data/index.m3u
+# Real TS segment fixture (binary, fetched on demand)
+/tests/data/hls/sample_segment.ts
+/tests/data/hls/m.m3u8
+/tests/data/hls/media.m3u8
 
 # Vita build artifacts
 *.velf

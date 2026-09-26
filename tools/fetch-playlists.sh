@@ -27,5 +27,21 @@ fetch "uk.m3u"     "$BASE/countries/uk.m3u"
 fetch "news.m3u"   "$BASE/categories/news.m3u"
 fetch "index.m3u"  "$BASE/index.m3u"
 
+# A real MPEG-TS segment for the demuxer test (best-effort; skipped on failure).
+# Resolves master -> 360p media playlist -> first segment. URLs rotate, so this
+# is fetched fresh and gitignored.
+FA="https://failarmy-international-gb.samsung.wurl.tv/playlist.m3u8"
+mkdir -p "$DEST/hls"
+if curl -fsSL -o "$DEST/hls/m.m3u8" "$FA" 2>/dev/null; then
+    var=$(grep -vE '^#' "$DEST/hls/m.m3u8" | head -1)
+    case "$var" in http*) vurl="$var";; *) vurl="${FA%/*}/$var";; esac
+    if curl -fsSL -o "$DEST/hls/media.m3u8" "$vurl" 2>/dev/null; then
+        seg=$(grep -vE '^#' "$DEST/hls/media.m3u8" | head -1)
+        echo "fetching sample_segment.ts"
+        curl -fsSL -o "$DEST/hls/sample_segment.ts" "$seg" 2>/dev/null \
+            || echo "  (segment fetch failed; TS real-data test will skip)"
+    fi
+fi
+
 echo "done. sizes:"
 ls -la "$DEST"
