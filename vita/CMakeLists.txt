@@ -6,7 +6,7 @@ include("${VITASDK}/share/vita.cmake" REQUIRED)
 set(VITA_APP_NAME "VitaIPTV")
 # Placeholder 9-character title ID; a final unique one is an M5 task.
 set(VITA_TITLEID  "VIPTV0001")
-set(VITA_VERSION  "00.03")
+set(VITA_VERSION  "00.04")
 
 add_executable(vitaiptv_vita
     src/main.c
@@ -32,11 +32,12 @@ target_link_libraries(vitaiptv_vita
     SceCommonDialog_stub
     SceAppMgr_stub
     SceKernelDmacMgr_stub
-    # pipeline: networking, TLS, HTTP, hardware decode, file IO
+    # TLS via OpenSSL (Sony SceHttp/SceSsl can't handshake modern CDNs)
+    ssl
+    crypto
+    # pipeline: networking, hardware decode, file IO
     SceNet_stub
     SceNetCtl_stub
-    SceHttp_stub
-    SceSsl_stub
     SceVideodec_stub
     SceIofilemgr_stub
 )
