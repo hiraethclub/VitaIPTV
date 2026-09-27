@@ -184,7 +184,8 @@ static void parse_pmt(vi_ts_demux *d, const uint8_t *sec, size_t n)
         }
 
         if (new_video >= 0 && new_video != d->video_pid) {
-            if (d->video_pid >= 0)
+            int was_set = (d->video_pid >= 0);
+            if (was_set)
                 VI_LOGW(TAG, "video pid %d -> %d (program change)",
                         d->video_pid, new_video);
             else
@@ -193,7 +194,8 @@ static void parse_pmt(vi_ts_demux *d, const uint8_t *sec, size_t n)
             d->video_stream_type = new_vtype;
             d->video.len = 0;
             d->video.collecting = 0;
-            d->pid_changed = 1;
+            if (was_set)
+                d->pid_changed = 1; /* real change only, not the initial set */
         }
         if (new_audio >= 0 && new_audio != d->audio_pid) {
             if (d->audio_pid < 0)

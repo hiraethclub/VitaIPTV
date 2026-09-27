@@ -42,6 +42,9 @@ unsigned long vi_vdec_frame_count(const vi_vdec *v);
 unsigned long vi_vdec_error_count(const vi_vdec *v);
 int vi_vdec_last_error(const vi_vdec *v);
 
+/* Reset decoder state after an error/discontinuity; feed a keyframe next. */
+void vi_vdec_flush(vi_vdec *v);
+
 void vi_vdec_destroy(vi_vdec *v);
 
 #ifdef __cplusplus

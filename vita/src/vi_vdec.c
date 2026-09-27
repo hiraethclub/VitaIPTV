@@ -12,6 +12,7 @@
 /* Not in the public psp2 headers but exported by SceVideodec: how much room is
  * left in the decoder's internal ES input buffer. Used for diagnostics. */
 extern int sceAvcdecDecodeAvailableSize(SceAvcdecCtrl *decoder);
+extern int sceAvcdecDecodeFlush(SceAvcdecCtrl *decoder);
 
 #define TAG "vdec"
 
@@ -205,6 +206,15 @@ int vi_vdec_height(const vi_vdec *v) { return v ? v->disp_h : 0; }
 unsigned long vi_vdec_frame_count(const vi_vdec *v) { return v ? v->frames : 0; }
 unsigned long vi_vdec_error_count(const vi_vdec *v) { return v ? v->errors : 0; }
 int vi_vdec_last_error(const vi_vdec *v) { return v ? v->last_err : 0; }
+
+/* Reset the decoder's internal state after an error or stream discontinuity.
+ * Without this, sceAvcdec stays wedged and rejects everything (incl. keyframes)
+ * with INVALID_STREAM. Feed a keyframe next. */
+void vi_vdec_flush(vi_vdec *v)
+{
+    if (v)
+        sceAvcdecDecodeFlush(&v->decoder);
+}
 
 void vi_vdec_destroy(vi_vdec *v)
 {

@@ -36,7 +36,7 @@
 #include "vi_http.h"
 #include "vi_vdec.h"
 
-#define BUILD_NUM "7"
+#define BUILD_NUM "8"
 
 #define MASTER_URL \
     "https://failarmy-international-gb.samsung.wurl.tv/playlist.m3u8"
@@ -217,17 +217,17 @@ static void on_ts_sample(void *ctx, const vi_ts_sample *s)
         set_state("playing");
     }
 
-    /* On a program change (ad splice) the demuxer reset its PES; wait for a
-     * fresh keyframe before decoding again. */
+    /* On a program change (ad splice) the demuxer reset its PES: flush the
+     * decoder and wait for a fresh keyframe. */
     if (g_demux.pid_changed) {
         g_demux.pid_changed = 0;
+        vi_vdec_flush(g_vdec);
         g_need_keyframe = 1;
-        VI_LOGW("app", "program change; waiting for keyframe");
+        VI_LOGW("app", "program change; flush + wait for keyframe");
     }
 
     /* After an error or discontinuity, skip P-frames until the next keyframe so
-     * we don't feed the decoder frames with broken references (which just
-     * produce more INVALID_STREAM errors). */
+     * we don't feed the decoder frames with broken references. */
     if (g_need_keyframe) {
         if (!au_has_keyframe(s->data, s->len))
             return;
@@ -240,7 +240,10 @@ static void on_ts_sample(void *ctx, const vi_ts_sample *s)
             g_dec_frames++;
             sceKernelDelayThread(FRAME_PACING_US);
         } else if (r < 0) {
-            g_need_keyframe = 1; /* recover at the next keyframe */
+            /* CRITICAL: flush the decoder, else it stays wedged and rejects
+             * every subsequent AU (including keyframes) with INVALID_STREAM. */
+            vi_vdec_flush(g_vdec);
+            g_need_keyframe = 1;
         }
     }
 }
