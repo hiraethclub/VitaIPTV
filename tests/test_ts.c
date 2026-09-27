@@ -252,11 +252,64 @@ static void test_real_segment(void)
     vi_ts_free(&d);
 }
 
+/* Build a PMT packet (on PID 32) declaring H.264 video + AAC audio at the
+ * given elementary PIDs. */
+static void make_pmt(uint8_t *pkt, int vpid, int apid)
+{
+    uint8_t p[40], pay[184];
+    p[0] = 0x02; p[1] = 0xB0; p[2] = 0x17;
+    p[3] = 0x00; p[4] = 0x01; p[5] = 0xC1; p[6] = 0x00; p[7] = 0x00;
+    p[8] = (uint8_t)(0xE0 | (vpid >> 8)); p[9] = (uint8_t)(vpid & 0xFF);
+    p[10] = 0xF0; p[11] = 0x00;
+    p[12] = 0x1B; p[13] = (uint8_t)(0xE0 | (vpid >> 8)); p[14] = (uint8_t)(vpid & 0xFF);
+    p[15] = 0xF0; p[16] = 0x00;
+    p[17] = 0x0F; p[18] = (uint8_t)(0xE0 | (apid >> 8)); p[19] = (uint8_t)(apid & 0xFF);
+    p[20] = 0xF0; p[21] = 0x00;
+    p[22] = p[23] = p[24] = p[25] = 0x00;
+    pay[0] = 0x00;
+    memcpy(pay + 1, p, 26);
+    make_packet(pkt, 1, 32, 0, pay, 27);
+}
+
+/* Ad-insertion: the PMT later moves video to a new PID; the demuxer must
+ * follow it (else it feeds the decoder mismatched data). */
+static void test_pmt_pid_change(void)
+{
+    vi_ts_demux d;
+    capture cap;
+    uint8_t pmt2[188], vpes[184], pkt[188];
+    uint8_t vau[8] = { 0,0,0,1, 0x67, 9,9,9 };
+    size_t vn;
+
+    printf("test_pmt_pid_change\n");
+    memset(&cap, 0, sizeof(cap));
+    build_psi();
+    vi_ts_init(&d, on_sample, &cap);
+    vi_ts_feed(&d, g_pat, VI_TS_PACKET_SIZE);
+    vi_ts_feed(&d, g_pmt, VI_TS_PACKET_SIZE);   /* video pid 0x100 */
+    CHECK(d.video_pid == 0x100, "initial video pid 0x100");
+
+    /* new PMT: video moves to 0x200 */
+    make_pmt(pmt2, 0x200, 0x201);
+    vi_ts_feed(&d, pmt2, VI_TS_PACKET_SIZE);
+    CHECK(d.video_pid == 0x200, "video pid followed to 0x200");
+    CHECK(d.pid_changed == 1, "pid_changed flagged");
+
+    /* a video PES on the NEW pid should be emitted */
+    vn = make_pes(vpes, 0xE0, 4242, vau, sizeof(vau));
+    make_packet(pkt, 1, 0x200, 0, vpes, vn);
+    vi_ts_feed(&d, pkt, VI_TS_PACKET_SIZE);
+    vi_ts_flush(&d);
+    CHECK(cap.v_count == 1 && cap.v_pts[0] == 4242, "decoded AU from new pid");
+    vi_ts_free(&d);
+}
+
 int main(void)
 {
     vi_log_init(VI_LOG_WARN); /* keep test output quiet */
     test_synthetic();
     test_chunked_feed();
+    test_pmt_pid_change();
     test_real_segment();
     printf("\n%d checks, %d failures\n", g_checks, g_fail);
     return g_fail ? 1 : 0;

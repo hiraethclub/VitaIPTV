@@ -147,33 +147,63 @@ static void parse_pmt(vi_ts_demux *d, const uint8_t *sec, size_t n)
     }
     end = 3 + section_length - 4;
     prog_info_len = ((sec[10] & 0x0F) << 8) | sec[11];
-    s = 12 + prog_info_len;
-    while (s + 5 <= end) {
-        int stream_type = sec[s];
-        int epid = ((sec[s + 1] & 0x1F) << 8) | sec[s + 2];
-        size_t es_info_len = ((sec[s + 3] & 0x0F) << 8) | sec[s + 4];
+    /*
+     * Collect the first H.264 and first AAC elementary PIDs in THIS PMT, then
+     * adopt them - allowing the PIDs to CHANGE. Live FAST channels do
+     * server-side ad insertion: the program is restructured mid-stream (the PAT
+     * even points program 1 at a different PMT PID), and the video/audio PIDs
+     * can change. Latching the first PIDs forever means we feed the decoder
+     * mismatched data at every ad boundary (observed as sceAvcdec
+     * INVALID_STREAM). On a change we reset that stream's PES reassembly so the
+     * next access unit starts clean.
+     */
+    {
+        int new_video = -1, new_vtype = 0;
+        int new_audio = -1, new_atype = 0;
 
-        if ((stream_type == VI_TS_STREAM_H264) && d->video_pid < 0) {
-            d->video_pid = epid;
-            d->video_stream_type = stream_type;
-            VI_LOGI(TAG, "PMT: H.264 video pid %d", epid);
-        } else if ((stream_type == VI_TS_STREAM_HEVC) && d->video_pid < 0) {
-            if (!d->warned_unsupported_video) {
-                VI_LOGE(TAG, "video stream_type 0x%02X (HEVC) not supported",
-                        stream_type);
-                d->warned_unsupported_video = 1;
+        s = 12 + prog_info_len;
+        while (s + 5 <= end) {
+            int stream_type = sec[s];
+            int epid = ((sec[s + 1] & 0x1F) << 8) | sec[s + 2];
+            size_t es_info_len = ((sec[s + 3] & 0x0F) << 8) | sec[s + 4];
+
+            if (stream_type == VI_TS_STREAM_H264 && new_video < 0) {
+                new_video = epid; new_vtype = stream_type;
+            } else if (stream_type == VI_TS_STREAM_HEVC && new_video < 0) {
+                if (!d->warned_unsupported_video) {
+                    VI_LOGE(TAG, "video stream_type 0x%02X (HEVC) unsupported",
+                            stream_type);
+                    d->warned_unsupported_video = 1;
+                }
+            } else if (stream_type == VI_TS_STREAM_AAC_ADTS && new_audio < 0) {
+                new_audio = epid; new_atype = stream_type;
+            } else if (stream_type == VI_TS_STREAM_AAC_LATM && new_audio < 0) {
+                new_audio = epid; new_atype = stream_type;
             }
-        } else if ((stream_type == VI_TS_STREAM_AAC_ADTS) && d->audio_pid < 0) {
-            d->audio_pid = epid;
-            d->audio_stream_type = stream_type;
-            VI_LOGI(TAG, "PMT: AAC(ADTS) audio pid %d", epid);
-        } else if ((stream_type == VI_TS_STREAM_AAC_LATM) && d->audio_pid < 0) {
-            d->audio_pid = epid;
-            d->audio_stream_type = stream_type;
-            VI_LOGW(TAG, "PMT: AAC(LATM) audio pid %d (LATM not yet handled)",
-                    epid);
+            s += 5 + es_info_len;
         }
-        s += 5 + es_info_len;
+
+        if (new_video >= 0 && new_video != d->video_pid) {
+            if (d->video_pid >= 0)
+                VI_LOGW(TAG, "video pid %d -> %d (program change)",
+                        d->video_pid, new_video);
+            else
+                VI_LOGI(TAG, "PMT: H.264 video pid %d", new_video);
+            d->video_pid = new_video;
+            d->video_stream_type = new_vtype;
+            d->video.len = 0;
+            d->video.collecting = 0;
+            d->pid_changed = 1;
+        }
+        if (new_audio >= 0 && new_audio != d->audio_pid) {
+            if (d->audio_pid < 0)
+                VI_LOGI(TAG, "PMT: AAC audio pid %d%s", new_audio,
+                        new_atype == VI_TS_STREAM_AAC_LATM ? " (LATM)" : "");
+            d->audio_pid = new_audio;
+            d->audio_stream_type = new_atype;
+            d->audio.len = 0;
+            d->audio.collecting = 0;
+        }
     }
     d->saw_pmt = 1;
 }

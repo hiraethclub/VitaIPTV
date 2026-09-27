@@ -344,13 +344,22 @@ Two follow-ups from that run:
    1.2 + SNI) over POSIX sockets (sceNet-backed), seeded from
    `sceKernelGetRandomNumber`. Cert verification is OFF for now (debug). This is
    the answer to the brief's TLS question: **use OpenSSL, not SceHttp.**
-2. **Decode errors / stop-start playback:** roughly half the access units
-   returned a `sceAvcdecDecode` error (HUD showed e.g. vAU 1593 / dec 829), and
-   playback stutters stop-start. Under investigation - build 5 adds the exact
-   error code + count to the HUD and to the log file so we can root-cause it.
-   Likely candidates: reference-frame/`numOfRefFrames` limits at 720p, feeding
-   pacing, or no read-ahead buffering between segment fetches. Next: read the
-   error code, fix decode, then add buffering + audio + A/V sync.
+2. **Decode errors / stop-start playback:** `sceAvcdecDecode` returned
+   `0x8062000D` INVALID_STREAM on many access units. Root-caused in two parts:
+   - **Threading (build 6):** creating the decoder on the main thread but
+     decoding on the worker thread caused immediate failures. Fixed by creating
+     the decoder on the worker (decode) thread, matching Moonlight/vitaki. The
+     normal stretch then decoded cleanly.
+   - **Ad insertion (build 7):** the remaining errors coincided with the PAT
+     moving program 1 to a different PMT PID (480 -> 4096 -> 480) - server-side
+     ad insertion restructures the program and can change the video/audio PIDs.
+     The demuxer was latching the first PIDs, so it fed mismatched data at each
+     splice. Fixed: the demuxer now follows PID changes and resets its PES on a
+     change; the decode side waits for a fresh keyframe after any error or
+     program change (Moonlight's "need IDR" pattern) instead of feeding
+     broken-reference frames. The `avail=` diagnostic proved the ES buffer was
+     never the issue (constant 691200, always bigger than the AU).
+   Next after this: read-ahead buffering for smooth playback, then audio + sync.
 
 ### Logging to a file
 

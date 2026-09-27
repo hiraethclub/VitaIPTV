@@ -79,6 +79,8 @@ typedef struct {
     int           saw_pat;
     int           saw_pmt;
     int           warned_unsupported_video;
+    int           pid_changed;  /* set when the video PID changes (ad splice);
+                                 * the consumer clears it and waits for an IDR */
 } vi_ts_demux;
 
 void vi_ts_init(vi_ts_demux *d, vi_ts_sample_cb cb, void *ctx);

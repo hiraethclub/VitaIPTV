@@ -36,6 +36,8 @@
 #include "vi_http.h"
 #include "vi_vdec.h"
 
+#define BUILD_NUM "7"
+
 #define MASTER_URL \
     "https://failarmy-international-gb.samsung.wurl.tv/playlist.m3u8"
 
@@ -84,7 +86,7 @@ static void log_unlock(void *c) { (void)c; sceKernelUnlockMutex(g_log_mutex, 1);
 
 static int g_log_sock = -1;
 static SceNetSockaddrIn g_log_addr;
-#define LOG_PATH "ux0:data/vitaiptv/vitaiptv.log"
+#define LOG_PATH "ux0:data/vitaiptv/vitaiptv-b" BUILD_NUM ".log"
 static int g_file_log;
 static SceUID g_logf_mutex = -1;
 
@@ -155,7 +157,23 @@ static void log_setup(void)
         VI_LOGI("app", "net log mirror enabled");
 }
 
+/* Does this Annex-B access unit contain a keyframe (SPS type 7 or IDR type 5)? */
+static int au_has_keyframe(const uint8_t *d, size_t n)
+{
+    size_t i;
+    for (i = 0; i + 4 < n; i++) {
+        if (d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 1) {
+            int t = d[i + 3] & 0x1F;
+            if (t == 7 || t == 5)
+                return 1;
+        }
+    }
+    return 0;
+}
+
 /* ---- demux callback: decode video, count audio ---- */
+static int g_need_keyframe;
+
 static void on_ts_sample(void *ctx, const vi_ts_sample *s)
 {
     (void)ctx;
@@ -199,11 +217,30 @@ static void on_ts_sample(void *ctx, const vi_ts_sample *s)
         set_state("playing");
     }
 
+    /* On a program change (ad splice) the demuxer reset its PES; wait for a
+     * fresh keyframe before decoding again. */
+    if (g_demux.pid_changed) {
+        g_demux.pid_changed = 0;
+        g_need_keyframe = 1;
+        VI_LOGW("app", "program change; waiting for keyframe");
+    }
+
+    /* After an error or discontinuity, skip P-frames until the next keyframe so
+     * we don't feed the decoder frames with broken references (which just
+     * produce more INVALID_STREAM errors). */
+    if (g_need_keyframe) {
+        if (!au_has_keyframe(s->data, s->len))
+            return;
+        g_need_keyframe = 0;
+    }
+
     {
         int r = vi_vdec_decode(g_vdec, s->data, s->len);
         if (r == 1) {
             g_dec_frames++;
             sceKernelDelayThread(FRAME_PACING_US);
+        } else if (r < 0) {
+            g_need_keyframe = 1; /* recover at the next keyframe */
         }
     }
 }
@@ -318,7 +355,8 @@ static void draw_hud(vita2d_pvf *font)
     sceKernelUnlockMutex(g_app_mutex, 1);
 
     vita2d_pvf_draw_text(font, 12, 24, COL_TITLE, 1.0f,
-                         "VitaIPTV - HLS pipeline (build 6, " __DATE__ ")");
+                         "VitaIPTV - HLS pipeline (build " BUILD_NUM ", "
+                         __DATE__ ")");
     vita2d_pvf_draw_text(font, 12, 48, COL_TEXT, 0.9f, line);
     vita2d_pvf_draw_textf(font, 12, 70, COL_TEXT, 0.9f,
         "variant %dx%d  segs %lu  %lu KiB  vAU %lu  aFR %lu  dec %lu",
