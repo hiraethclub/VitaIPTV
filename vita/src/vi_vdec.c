@@ -30,6 +30,8 @@ struct vi_vdec {
     size_t   au_cap;
 
     unsigned long frames;
+    unsigned long errors;
+    int last_err;
     int inited_lib;
 };
 
@@ -165,7 +167,12 @@ int vi_vdec_decode(vi_vdec *v, const uint8_t *au, size_t len)
 
     ret = sceAvcdecDecode(&v->decoder, &dau, &array);
     if (ret < 0) {
-        VI_LOGE(TAG, "sceAvcdecDecode 0x%08X (len=%u)", ret, (unsigned)len);
+        v->errors++;
+        v->last_err = ret;
+        /* rate-limit: the first few, then occasionally */
+        if (v->errors <= 5 || (v->errors % 300) == 0)
+            VI_LOGE(TAG, "sceAvcdecDecode 0x%08X (len=%u) [errs=%lu]",
+                    (unsigned)ret, (unsigned)len, v->errors);
         return -1;
     }
     if (array.numOfOutput < 1)
@@ -191,6 +198,8 @@ vita2d_texture *vi_vdec_front(vi_vdec *v)
 int vi_vdec_width(const vi_vdec *v)  { return v ? v->disp_w : 0; }
 int vi_vdec_height(const vi_vdec *v) { return v ? v->disp_h : 0; }
 unsigned long vi_vdec_frame_count(const vi_vdec *v) { return v ? v->frames : 0; }
+unsigned long vi_vdec_error_count(const vi_vdec *v) { return v ? v->errors : 0; }
+int vi_vdec_last_error(const vi_vdec *v) { return v ? v->last_err : 0; }
 
 void vi_vdec_destroy(vi_vdec *v)
 {

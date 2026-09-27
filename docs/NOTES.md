@@ -330,6 +330,34 @@ Portable layers (`core/`) are all unit-tested here. Device glue (`vita/`):
   `tools/deploy.sh log` (a UDP listener) on the PC. If the file is absent,
   on-screen logging still works.
 
+## 5c. Custom pipeline WORKS on hardware (2026-09-27)
+
+Video plays on the real Vita: the full custom pipeline decoded and displayed the
+FailArmy 1280x720 H.264 stream. Confirms end-to-end: OpenSSL HTTPS fetch -> HLS
+parse -> MPEG-TS demux -> SPS -> SceVideodec hardware decode -> vita2d render.
+
+Two follow-ups from that run:
+
+1. **TLS:** Sony's SceHttp failed the handshake on the Samsung Wurl CDN
+   (`SCE_HTTP_ERROR_SSL` 0x80431075) even with cert checks off - SceSsl is too
+   old. Replaced with our own client using the bundled **OpenSSL 1.0.2** (TLS
+   1.2 + SNI) over POSIX sockets (sceNet-backed), seeded from
+   `sceKernelGetRandomNumber`. Cert verification is OFF for now (debug). This is
+   the answer to the brief's TLS question: **use OpenSSL, not SceHttp.**
+2. **Decode errors / stop-start playback:** roughly half the access units
+   returned a `sceAvcdecDecode` error (HUD showed e.g. vAU 1593 / dec 829), and
+   playback stutters stop-start. Under investigation - build 5 adds the exact
+   error code + count to the HUD and to the log file so we can root-cause it.
+   Likely candidates: reference-frame/`numOfRefFrames` limits at 720p, feeding
+   pacing, or no read-ahead buffering between segment fetches. Next: read the
+   error code, fix decode, then add buffering + audio + A/V sync.
+
+### Logging to a file
+
+`vita/src/main.c` now writes every log line to **`ux0:data/vitaiptv/vitaiptv.log`**
+(truncated each launch, appended per line so it stays flushed and readable over
+FTP while running). The UDP mirror (via `pc_ip.txt`) still works too.
+
 ## 6. Must-be-tested-on-hardware (cannot verify from here)
 
 1. **M0 VPK installs and runs.** Install `vitaiptv.vpk` via VitaShell; confirm

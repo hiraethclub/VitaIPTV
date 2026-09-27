@@ -21,6 +21,7 @@
 #include <psp2/net/net.h>
 #include <psp2/net/netctl.h>
 #include <psp2/io/fcntl.h>
+#include <psp2/io/stat.h>
 
 #include <vita2d.h>
 
@@ -83,47 +84,75 @@ static void log_unlock(void *c) { (void)c; sceKernelUnlockMutex(g_log_mutex, 1);
 
 static int g_log_sock = -1;
 static SceNetSockaddrIn g_log_addr;
-static void net_log_sink(void *ctx, vi_log_level lvl, const char *line)
+#define LOG_PATH "ux0:data/vitaiptv/vitaiptv.log"
+static int g_file_log;
+static SceUID g_logf_mutex = -1;
+
+/* Sink: append each line to the log file (opened+closed per line so it stays
+ * flushed and readable over FTP while running) and, if configured, mirror to a
+ * PC over UDP. */
+static void log_sink(void *ctx, vi_log_level lvl, const char *line)
 {
-    char b[256];
-    int n;
     (void)ctx; (void)lvl;
-    if (g_log_sock < 0)
-        return;
-    n = snprintf(b, sizeof(b), "%s\n", line);
-    sceNetSendto(g_log_sock, b, (unsigned)n, 0,
-                 (SceNetSockaddr *)&g_log_addr, sizeof(g_log_addr));
+    if (g_file_log) {
+        SceUID fd;
+        sceKernelLockMutex(g_logf_mutex, 1, NULL);
+        fd = sceIoOpen(LOG_PATH, SCE_O_WRONLY | SCE_O_APPEND, 0777);
+        if (fd >= 0) {
+            sceIoWrite(fd, line, strlen(line));
+            sceIoWrite(fd, "\n", 1);
+            sceIoClose(fd);
+        }
+        sceKernelUnlockMutex(g_logf_mutex, 1);
+    }
+    if (g_log_sock >= 0) {
+        char b[256];
+        int n = snprintf(b, sizeof(b), "%s\n", line);
+        sceNetSendto(g_log_sock, b, (unsigned)n, 0,
+                     (SceNetSockaddr *)&g_log_addr, sizeof(g_log_addr));
+    }
 }
 
-/* Read ux0:data/vitaiptv/pc_ip.txt ("A.B.C.D" or "A.B.C.D:port") and, if
- * present, mirror logs to that PC over UDP (read with tools/deploy.sh log). */
-static void net_log_setup(void)
+/* Truncate the log fresh each launch and, if ux0:data/vitaiptv/pc_ip.txt holds
+ * an IP, also set up the UDP mirror. */
+static void log_setup(void)
 {
     char cfg[64];
     SceUID fd;
     int n, a, b, c, d, port = 18194;
     unsigned long ip;
 
-    fd = sceIoOpen("ux0:data/vitaiptv/pc_ip.txt", SCE_O_RDONLY, 0);
-    if (fd < 0)
-        return;
-    n = sceIoRead(fd, cfg, sizeof(cfg) - 1);
-    sceIoClose(fd);
-    if (n <= 0)
-        return;
-    cfg[n] = '\0';
-    if (sscanf(cfg, "%d.%d.%d.%d:%d", &a, &b, &c, &d, &port) < 4)
-        return;
+    sceIoMkdir("ux0:data", 0777);
+    sceIoMkdir("ux0:data/vitaiptv", 0777);
+    g_logf_mutex = sceKernelCreateMutex("logf", 0, 0, NULL);
+    fd = sceIoOpen(LOG_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
+    if (fd >= 0) { sceIoClose(fd); g_file_log = 1; }
 
-    g_log_sock = sceNetSocket("vilog", SCE_NET_AF_INET, SCE_NET_SOCK_DGRAM, 0);
-    if (g_log_sock < 0) { g_log_sock = -1; return; }
-    ip = ((unsigned long)a << 24) | (b << 16) | (c << 8) | d;
-    memset(&g_log_addr, 0, sizeof(g_log_addr));
-    g_log_addr.sin_family = SCE_NET_AF_INET;
-    g_log_addr.sin_port = sceNetHtons((unsigned short)port);
-    g_log_addr.sin_addr.s_addr = sceNetHtonl(ip);
-    vi_log_set_sink(net_log_sink, NULL);
-    VI_LOGI("app", "net log -> %d.%d.%d.%d:%d", a, b, c, d, port);
+    fd = sceIoOpen("ux0:data/vitaiptv/pc_ip.txt", SCE_O_RDONLY, 0);
+    if (fd >= 0) {
+        n = sceIoRead(fd, cfg, sizeof(cfg) - 1);
+        sceIoClose(fd);
+        if (n > 0) {
+            cfg[n] = '\0';
+            if (sscanf(cfg, "%d.%d.%d.%d:%d", &a, &b, &c, &d, &port) >= 4) {
+                g_log_sock = sceNetSocket("vilog", SCE_NET_AF_INET,
+                                          SCE_NET_SOCK_DGRAM, 0);
+                if (g_log_sock >= 0) {
+                    ip = ((unsigned long)a << 24) | (b << 16) | (c << 8) | d;
+                    memset(&g_log_addr, 0, sizeof(g_log_addr));
+                    g_log_addr.sin_family = SCE_NET_AF_INET;
+                    g_log_addr.sin_port = sceNetHtons((unsigned short)port);
+                    g_log_addr.sin_addr.s_addr = sceNetHtonl(ip);
+                }
+            }
+        }
+    }
+
+    vi_log_set_sink(log_sink, NULL);
+    if (g_file_log)
+        VI_LOGI("app", "logging to " LOG_PATH);
+    if (g_log_sock >= 0)
+        VI_LOGI("app", "net log mirror enabled");
 }
 
 /* ---- demux callback: decode video, count audio ---- */
@@ -294,18 +323,23 @@ static void draw_hud(vita2d_pvf *font)
     sceKernelUnlockMutex(g_app_mutex, 1);
 
     vita2d_pvf_draw_text(font, 12, 24, COL_TITLE, 1.0f,
-                         "VitaIPTV - HLS pipeline (build 4, " __DATE__ ")");
+                         "VitaIPTV - HLS pipeline (build 5, " __DATE__ ")");
     vita2d_pvf_draw_text(font, 12, 48, COL_TEXT, 0.9f, line);
     vita2d_pvf_draw_textf(font, 12, 70, COL_TEXT, 0.9f,
         "variant %dx%d  segs %lu  %lu KiB  vAU %lu  aFR %lu  dec %lu",
         g_sel_w, g_sel_h, g_segs, g_http_bytes_k,
         g_video_aus, g_audio_frames, g_dec_frames);
+    if (g_vdec)
+        vita2d_pvf_draw_textf(font, 12, 90, COL_TEXT, 0.9f,
+            "decode ok %lu  err %lu  last 0x%08X",
+            vi_vdec_frame_count(g_vdec), vi_vdec_error_count(g_vdec),
+            (unsigned)vi_vdec_last_error(g_vdec));
 
     /* last log lines */
     total = vi_log_ring_count();
-    shown = 12;
+    shown = 11;
     start = total > shown ? total - shown : 0;
-    y = 96;
+    y = 114;
     for (i = start; i < total; i++) {
         unsigned int col = COL_DIM;
         if (vi_log_ring_copy(i, line, sizeof(line), &lvl)) {
@@ -337,7 +371,7 @@ int main(void)
     font = vita2d_load_default_pvf();
 
     net_up();
-    net_log_setup();
+    log_setup();
     if (vi_http_init() != 0)
         set_state("http init failed");
 

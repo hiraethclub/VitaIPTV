@@ -39,6 +39,8 @@ vita2d_texture *vi_vdec_front(vi_vdec *v);
 int vi_vdec_width(const vi_vdec *v);
 int vi_vdec_height(const vi_vdec *v);
 unsigned long vi_vdec_frame_count(const vi_vdec *v);
+unsigned long vi_vdec_error_count(const vi_vdec *v);
+int vi_vdec_last_error(const vi_vdec *v);
 
 void vi_vdec_destroy(vi_vdec *v);
 
