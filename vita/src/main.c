@@ -36,7 +36,7 @@
 #include "vi_http.h"
 #include "vi_vdec.h"
 
-#define BUILD_NUM "8"
+#define BUILD_NUM "9"
 
 #define MASTER_URL \
     "https://failarmy-international-gb.samsung.wurl.tv/playlist.m3u8"
@@ -157,25 +157,12 @@ static void log_setup(void)
         VI_LOGI("app", "net log mirror enabled");
 }
 
-/* Does this Annex-B access unit contain a keyframe (SPS type 7 or IDR type 5)? */
-static int au_has_keyframe(const uint8_t *d, size_t n)
-{
-    size_t i;
-    for (i = 0; i + 4 < n; i++) {
-        if (d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 1) {
-            int t = d[i + 3] & 0x1F;
-            if (t == 7 || t == 5)
-                return 1;
-        }
-    }
-    return 0;
-}
-
-/* ---- demux callback: decode video, count audio ---- */
-static int g_need_keyframe;
+/* ---- demux callback: decode + display video, count audio ---- */
+static int64_t g_last_pts = -1;  /* VI_TS_NO_PTS */
 
 static void on_ts_sample(void *ctx, const vi_ts_sample *s)
 {
+    int r;
     (void)ctx;
     if (!g_running)
         return;
@@ -217,39 +204,86 @@ static void on_ts_sample(void *ctx, const vi_ts_sample *s)
         set_state("playing");
     }
 
-    /* On a program change (ad splice) the demuxer reset its PES: flush the
-     * decoder and wait for a fresh keyframe. */
+    /* Program change (ad splice): the demuxer already reset its PES and now
+     * follows the new PIDs. Just keep feeding; the hardware decoder resyncs at
+     * the next keyframe by itself. (Explicit flush / keyframe-skip was tried in
+     * builds 7-8 and made playback worse, so we don't interfere.) */
     if (g_demux.pid_changed) {
         g_demux.pid_changed = 0;
-        vi_vdec_flush(g_vdec);
-        g_need_keyframe = 1;
-        VI_LOGW("app", "program change; flush + wait for keyframe");
+        g_last_pts = -1; /* PTS will jump across the splice */
     }
 
-    /* After an error or discontinuity, skip P-frames until the next keyframe so
-     * we don't feed the decoder frames with broken references. */
-    if (g_need_keyframe) {
-        if (!au_has_keyframe(s->data, s->len))
-            return;
-        g_need_keyframe = 0;
-    }
+    /* Feed every access unit. A few frames may error across a discontinuity;
+     * they are counted and the decoder recovers itself at the next keyframe. */
+    r = vi_vdec_decode(g_vdec, s->data, s->len);
+    g_dec_frames = vi_vdec_frame_count(g_vdec);
 
-    {
-        int r = vi_vdec_decode(g_vdec, s->data, s->len);
-        if (r == 1) {
-            g_dec_frames++;
-            sceKernelDelayThread(FRAME_PACING_US);
-        } else if (r < 0) {
-            /* CRITICAL: flush the decoder, else it stays wedged and rejects
-             * every subsequent AU (including keyframes) with INVALID_STREAM. */
-            vi_vdec_flush(g_vdec);
-            g_need_keyframe = 1;
+    /* Pace only on a displayed frame, to the stream's own timing (PTS delta;
+     * these streams have no B-frames so PTS is monotonic in decode order).
+     * On an errored frame we don't pace, so we plow quickly through a bad
+     * stretch to the next keyframe instead of sitting on it in real time.
+     * Read-ahead buffering keeps this thread fed, so normal playback is a
+     * steady, gap-free frame rate. */
+    if (r == 1 && s->pts != VI_TS_NO_PTS) {
+        if (g_last_pts != VI_TS_NO_PTS) {
+            int64_t d = s->pts - g_last_pts;
+            if (d > 0 && d < 90000)        /* < 1s: a normal inter-frame gap */
+                sceKernelDelayThread((SceUInt)(d * 1000000 / 90000));
+            else
+                sceKernelDelayThread(FRAME_PACING_US);
         }
+        g_last_pts = s->pts;
     }
 }
 
-/* ---- worker: fetch + demux the live stream ---- */
-static int worker_thread(SceSize argsz, void *argp)
+/* ---- segment read-ahead queue (fetch thread -> decode thread) ----
+ * The fetch thread downloads segments and pushes them here; the decode thread
+ * pops and plays them. Because fetching a segment (~2 s over TLS) is faster
+ * than playing it (~6 s real time), the queue stays full and the decode thread
+ * never waits on the network - which is what removes the stop-start. */
+#define SEG_QUEUE_N 5
+typedef struct { uint8_t *data; size_t len; } seg_item;
+static seg_item g_segq[SEG_QUEUE_N];
+static int g_qhead, g_qtail, g_qcount;
+static SceUID g_q_mutex = -1;
+
+static int segq_push(uint8_t *data, size_t len)
+{
+    for (;;) {
+        if (!g_running) return -1;
+        sceKernelLockMutex(g_q_mutex, 1, NULL);
+        if (g_qcount < SEG_QUEUE_N) {
+            g_segq[g_qtail].data = data;
+            g_segq[g_qtail].len = len;
+            g_qtail = (g_qtail + 1) % SEG_QUEUE_N;
+            g_qcount++;
+            sceKernelUnlockMutex(g_q_mutex, 1);
+            return 0;
+        }
+        sceKernelUnlockMutex(g_q_mutex, 1);
+        sceKernelDelayThread(10000); /* full: wait for the decoder to drain */
+    }
+}
+
+static int segq_pop(seg_item *out)
+{
+    for (;;) {
+        sceKernelLockMutex(g_q_mutex, 1, NULL);
+        if (g_qcount > 0) {
+            *out = g_segq[g_qhead];
+            g_qhead = (g_qhead + 1) % SEG_QUEUE_N;
+            g_qcount--;
+            sceKernelUnlockMutex(g_q_mutex, 1);
+            return 0;
+        }
+        sceKernelUnlockMutex(g_q_mutex, 1);
+        if (!g_running) return -1;
+        sceKernelDelayThread(10000); /* empty: wait for a fetched segment */
+    }
+}
+
+/* ---- fetch thread: HLS master/media -> download segments -> queue ---- */
+static int fetch_thread(SceSize argsz, void *argp)
 {
     uint8_t *mb;
     size_t mn;
@@ -285,7 +319,6 @@ static int worker_thread(SceSize argsz, void *argp)
         size_t i;
         int td;
 
-        set_state(g_vdec ? "playing" : "fetching media playlist");
         mp = vi_http_get(media_url, &mpn, &st);
         if (!mp) { VI_LOGW("app", "media fetch failed"); sceKernelDelayThread(2000000); continue; }
         if (vi_hls_parse_media((char *)mp, mpn, &md) != 0) { free(mp); continue; }
@@ -309,9 +342,7 @@ static int worker_thread(SceSize argsz, void *argp)
             if (!sb) { VI_LOGW("app", "segment fetch failed"); continue; }
             g_segs++;
             g_http_bytes_k += (unsigned long)(sn / 1024);
-            vi_ts_feed(&g_demux, sb, sn);
-            vi_ts_flush(&g_demux);
-            free(sb);
+            if (segq_push(sb, sn) != 0) { free(sb); vi_hls_media_free(&md); return 0; }
             last_seq = md.segments[i].seq;
         }
         td = md.target_duration;
@@ -319,7 +350,21 @@ static int worker_thread(SceSize argsz, void *argp)
         vi_hls_media_free(&md);
         sceKernelDelayThread((SceUInt)((td > 0 ? td : 4) * 500000)); /* td/2 s */
     }
-    set_state("stopped");
+    return 0;
+}
+
+/* ---- decode thread: queue -> demux -> decode -> render texture ---- */
+static int decode_thread(SceSize argsz, void *argp)
+{
+    (void)argsz; (void)argp;
+    while (g_running) {
+        seg_item it;
+        if (segq_pop(&it) != 0)
+            break;
+        vi_ts_feed(&g_demux, it.data, it.len);
+        vi_ts_flush(&g_demux);
+        free(it.data);
+    }
     return 0;
 }
 
@@ -362,9 +407,9 @@ static void draw_hud(vita2d_pvf *font)
                          __DATE__ ")");
     vita2d_pvf_draw_text(font, 12, 48, COL_TEXT, 0.9f, line);
     vita2d_pvf_draw_textf(font, 12, 70, COL_TEXT, 0.9f,
-        "variant %dx%d  segs %lu  %lu KiB  vAU %lu  aFR %lu  dec %lu",
-        g_sel_w, g_sel_h, g_segs, g_http_bytes_k,
-        g_video_aus, g_audio_frames, g_dec_frames);
+        "variant %dx%d  buf %d/%d  segs %lu  %lu KiB  vAU %lu  dec %lu",
+        g_sel_w, g_sel_h, g_qcount, SEG_QUEUE_N, g_segs, g_http_bytes_k,
+        g_video_aus, g_dec_frames);
     if (g_vdec)
         vita2d_pvf_draw_textf(font, 12, 90, COL_TEXT, 0.9f,
             "decode ok %lu  err %lu  last 0x%08X",
@@ -393,7 +438,7 @@ int main(void)
 {
     vita2d_pvf *font;
     SceCtrlData pad, prev;
-    SceUID worker;
+    SceUID fetch_t, decode_t;
     int hud = 1;
 
     g_app_mutex = sceKernelCreateMutex("app", 0, 0, NULL);
@@ -412,13 +457,19 @@ int main(void)
         set_state("http init failed");
 
     vi_ts_init(&g_demux, on_ts_sample, NULL);
+    g_q_mutex = sceKernelCreateMutex("segq", 0, 0, NULL);
 
-    worker = sceKernelCreateThread("vi_worker", worker_thread,
-                                   0x10000100, 0x40000, 0, 0, NULL);
-    if (worker >= 0)
-        sceKernelStartThread(worker, 0, NULL);
-    else
-        set_state("worker create failed");
+    /* Two threads: fetch stays several segments ahead, decode plays them. */
+    fetch_t = sceKernelCreateThread("vi_fetch", fetch_thread,
+                                    0x10000100, 0x40000, 0, 0, NULL);
+    decode_t = sceKernelCreateThread("vi_decode", decode_thread,
+                                     0x10000100, 0x40000, 0, 0, NULL);
+    if (fetch_t >= 0 && decode_t >= 0) {
+        sceKernelStartThread(decode_t, 0, NULL);
+        sceKernelStartThread(fetch_t, 0, NULL);
+    } else {
+        set_state("thread create failed");
+    }
 
     sceCtrlSetSamplingMode(SCE_CTRL_MODE_ANALOG);
     memset(&prev, 0, sizeof(prev));
@@ -457,7 +508,8 @@ int main(void)
      * could hang exit). Signal stop and let the process teardown reclaim
      * everything - avoids racing the worker's decode against vita2d_fini. */
     g_running = 0;
-    (void)worker;
+    (void)fetch_t;
+    (void)decode_t;
     sceKernelExitProcess(0);
     return 0;
 }

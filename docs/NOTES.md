@@ -361,6 +361,25 @@ Two follow-ups from that run:
      never the issue (constant 691200, always bigger than the AU).
    Next after this: read-ahead buffering for smooth playback, then audio + sync.
 
+3. **Recovery logic was a wrong turn (builds 7-8).** Adding keyframe-skip
+   (build 7) then decoder flush (build 8) after decode errors both made
+   playback *worse* (freeze instead of stutter). vitaki even has
+   `sceAvcdecDecodeFlush` commented out - it's a known dead end. Reverted to
+   build 6's behaviour: feed every AU and let the hardware decoder resync at
+   the next keyframe on its own.
+
+4. **The real stop-start was the architecture, not the decoder (build 9).** The
+   rhythmic "play a few seconds, freeze, play" was serial fetch-then-decode on
+   one thread: we spent ~6 s decoding a segment, then playback froze for 1-3 s
+   downloading the next ~2.9 MB segment over TLS. Fixed with **read-ahead
+   buffering**: a fetch thread downloads segments into a bounded queue
+   (`SEG_QUEUE_N` deep) while a separate decode thread plays them, so the
+   decoder never waits on the network. Also switched to **PTS-based pacing**
+   (pace only on a displayed frame, by the PTS delta) so normal playback runs
+   at the stream's real frame rate and a bad stretch is plowed through quickly.
+   The demuxer's PID-following (ad splices) is kept; the fragile decode-side
+   recovery is gone. HUD shows `buf N/M` (queue depth).
+
 ### Logging to a file
 
 `vita/src/main.c` now writes every log line to **`ux0:data/vitaiptv/vitaiptv.log`**
