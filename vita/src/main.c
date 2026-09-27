@@ -293,7 +293,8 @@ static void draw_hud(vita2d_pvf *font)
     snprintf(line, sizeof(line), "state: %s", g_state);
     sceKernelUnlockMutex(g_app_mutex, 1);
 
-    vita2d_pvf_draw_text(font, 12, 24, COL_TITLE, 1.0f, "VitaIPTV - HLS pipeline");
+    vita2d_pvf_draw_text(font, 12, 24, COL_TITLE, 1.0f,
+                         "VitaIPTV - HLS pipeline (build 2, " __DATE__ ")");
     vita2d_pvf_draw_text(font, 12, 48, COL_TEXT, 0.9f, line);
     vita2d_pvf_draw_textf(font, 12, 70, COL_TEXT, 0.9f,
         "variant %dx%d  segs %lu  %lu KiB  vAU %lu  aFR %lu  dec %lu",
