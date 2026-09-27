@@ -63,7 +63,7 @@ static volatile unsigned long g_segs, g_http_bytes_k;
 static volatile unsigned long g_video_aus, g_audio_frames, g_dec_frames;
 
 /* decoder handshake: worker requests, main thread creates (GXM ownership) */
-static volatile int g_req_w, g_req_h, g_decoder_requested, g_decoder_failed;
+static volatile int g_decoder_failed;
 static vi_vdec *g_vdec;               /* set by main thread */
 
 static vi_ts_demux g_demux;
@@ -169,38 +169,33 @@ static void on_ts_sample(void *ctx, const vi_ts_sample *s)
     g_video_aus++;
 
     if (g_vdec == NULL) {
-        /* need a decoder: parse SPS and ask the main thread to create it */
+        /* Create the decoder on THIS (worker) thread, the same thread that
+         * decodes - both reference implementations (Moonlight, vitaki) create
+         * and decode on one thread, and splitting them caused intermittent
+         * INVALID_STREAM. */
         vi_h264_sps sps;
+        vi_vdec *d;
         if (g_decoder_failed)
             return;
-        if (!g_decoder_requested) {
-            if (vi_h264_parse_au_sps(s->data, s->len, &sps) != 0)
-                return; /* wait for a keyframe carrying an SPS */
-            VI_LOGI("app", "SPS %dx%d profile %d level %d",
-                    sps.width, sps.height, sps.profile_idc, sps.level_idc);
-            if (sps.width > CEIL_W || sps.height > CEIL_H) {
-                VI_LOGE("app", "stream %dx%d exceeds ceiling %dx%d",
-                        sps.width, sps.height, CEIL_W, CEIL_H);
-                set_state("stream exceeds decoder ceiling");
-                g_decoder_failed = 1;
-                return;
-            }
-            g_req_w = sps.width;
-            g_req_h = sps.height;
-            g_decoder_requested = 1;
-            set_state("creating decoder");
-        }
-        /* wait (briefly) for the main thread to bring the decoder up */
-        {
-            int spins = 0;
-            while (g_vdec == NULL && !g_decoder_failed && g_running &&
-                   spins < 600) {
-                sceKernelDelayThread(10000);
-                spins++;
-            }
-        }
-        if (g_vdec == NULL)
+        if (vi_h264_parse_au_sps(s->data, s->len, &sps) != 0)
+            return; /* wait for a keyframe carrying an SPS */
+        VI_LOGI("app", "SPS %dx%d profile %d level %d",
+                sps.width, sps.height, sps.profile_idc, sps.level_idc);
+        if (sps.width > CEIL_W || sps.height > CEIL_H) {
+            VI_LOGE("app", "stream %dx%d exceeds ceiling %dx%d",
+                    sps.width, sps.height, CEIL_W, CEIL_H);
+            set_state("stream exceeds decoder ceiling");
+            g_decoder_failed = 1;
             return;
+        }
+        set_state("creating decoder");
+        d = vi_vdec_create(sps.width, sps.height);
+        if (!d) {
+            g_decoder_failed = 1;
+            set_state("decoder init failed");
+            return;
+        }
+        g_vdec = d;
         set_state("playing");
     }
 
@@ -323,7 +318,7 @@ static void draw_hud(vita2d_pvf *font)
     sceKernelUnlockMutex(g_app_mutex, 1);
 
     vita2d_pvf_draw_text(font, 12, 24, COL_TITLE, 1.0f,
-                         "VitaIPTV - HLS pipeline (build 5, " __DATE__ ")");
+                         "VitaIPTV - HLS pipeline (build 6, " __DATE__ ")");
     vita2d_pvf_draw_text(font, 12, 48, COL_TEXT, 0.9f, line);
     vita2d_pvf_draw_textf(font, 12, 70, COL_TEXT, 0.9f,
         "variant %dx%d  segs %lu  %lu KiB  vAU %lu  aFR %lu  dec %lu",
@@ -396,13 +391,6 @@ int main(void)
         if ((pad.buttons & SCE_CTRL_TRIANGLE) && !(prev.buttons & SCE_CTRL_TRIANGLE))
             hud = !hud;
         prev = pad;
-
-        /* fulfil a decoder-creation request on this (GXM-owning) thread */
-        if (g_decoder_requested && g_vdec == NULL && !g_decoder_failed) {
-            vi_vdec *d = vi_vdec_create(g_req_w, g_req_h);
-            if (d) g_vdec = d;
-            else { g_decoder_failed = 1; set_state("decoder init failed"); }
-        }
 
         vita2d_start_drawing();
         vita2d_clear_screen();

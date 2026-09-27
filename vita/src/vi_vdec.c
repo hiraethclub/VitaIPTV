@@ -9,6 +9,10 @@
 
 #include "vi_log.h"
 
+/* Not in the public psp2 headers but exported by SceVideodec: how much room is
+ * left in the decoder's internal ES input buffer. Used for diagnostics. */
+extern int sceAvcdecDecodeAvailableSize(SceAvcdecCtrl *decoder);
+
 #define TAG "vdec"
 
 #define ROUND_UP_16(x) (((x) + 15) & ~15)
@@ -170,9 +174,10 @@ int vi_vdec_decode(vi_vdec *v, const uint8_t *au, size_t len)
         v->errors++;
         v->last_err = ret;
         /* rate-limit: the first few, then occasionally */
-        if (v->errors <= 5 || (v->errors % 300) == 0)
-            VI_LOGE(TAG, "sceAvcdecDecode 0x%08X (len=%u) [errs=%lu]",
-                    (unsigned)ret, (unsigned)len, v->errors);
+        if (v->errors <= 8 || (v->errors % 300) == 0)
+            VI_LOGE(TAG, "sceAvcdecDecode 0x%08X (len=%u avail=%d) [errs=%lu]",
+                    (unsigned)ret, (unsigned)len,
+                    sceAvcdecDecodeAvailableSize(&v->decoder), v->errors);
         return -1;
     }
     if (array.numOfOutput < 1)

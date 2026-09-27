@@ -6,7 +6,7 @@ include("${VITASDK}/share/vita.cmake" REQUIRED)
 set(VITA_APP_NAME "VitaIPTV")
 # Placeholder 9-character title ID; a final unique one is an M5 task.
 set(VITA_TITLEID  "VIPTV0001")
-set(VITA_VERSION  "00.05")
+set(VITA_VERSION  "00.06")
 
 add_executable(vitaiptv_vita
     src/main.c
