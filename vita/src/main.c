@@ -36,7 +36,7 @@
 #include "vi_http.h"
 #include "vi_vdec.h"
 
-#define BUILD_NUM "10"
+#define BUILD_NUM "11"
 
 #define MASTER_URL \
     "https://failarmy-international-gb.samsung.wurl.tv/playlist.m3u8"

@@ -17,7 +17,8 @@ extern int sceAvcdecDecodeFlush(SceAvcdecCtrl *decoder);
 #define TAG "vdec"
 
 #define ROUND_UP_16(x) (((x) + 15) & ~15)
-#define AU_PADDING 64  /* trailing zero padding some decoders expect */
+#define AU_PADDING 64          /* trailing zero padding some decoders expect */
+#define AU_BUF_SIZE (1u << 20) /* 1 MiB uncached ES input buffer (4KB aligned) */
 
 struct vi_vdec {
     SceAvcdecCtrl decoder;
@@ -31,8 +32,12 @@ struct vi_vdec {
     int             front;   /* index shown */
     SceUID          mutex;
 
-    uint8_t *au_buf;
-    size_t   au_cap;
+    /* ES input buffer MUST be uncached: the hardware decoder DMA-reads it, and
+     * cached CPU writes may not have reached RAM yet -> stale bytes ->
+     * intermittent INVALID_STREAM (~15% of frames). */
+    SceUID    au_block;
+    uint8_t  *au_buf;
+    size_t    au_cap;
 
     unsigned long frames;
     unsigned long errors;
@@ -56,6 +61,7 @@ vi_vdec *vi_vdec_create(int width, int height)
     if (!v)
         return NULL;
     v->block = -1;
+    v->au_block = -1;
     v->mutex = -1;
     v->disp_w = width;
     v->disp_h = height;
@@ -118,6 +124,19 @@ vi_vdec *vi_vdec_create(int width, int height)
         }
     }
 
+    /* Uncached ES input buffer (see struct comment). */
+    v->au_block = sceKernelAllocMemBlock("vi_au",
+        SCE_KERNEL_MEMBLOCK_TYPE_USER_RW_UNCACHE, AU_BUF_SIZE, NULL);
+    if (v->au_block < 0) {
+        VI_LOGE(TAG, "au AllocMemBlock 0x%08X", v->au_block);
+        goto fail;
+    }
+    if (sceKernelGetMemBlockBase(v->au_block, (void **)&v->au_buf) < 0) {
+        VI_LOGE(TAG, "au GetMemBlockBase failed");
+        goto fail;
+    }
+    v->au_cap = AU_BUF_SIZE;
+
     v->mutex = sceKernelCreateMutex("vi_vdec", 0, 0, NULL);
     v->front = 0;
 
@@ -143,11 +162,12 @@ int vi_vdec_decode(vi_vdec *v, const uint8_t *au, size_t len)
     if (!v || len == 0)
         return 0;
 
-    if (v->au_cap < len + AU_PADDING) {
-        size_t nc = len + AU_PADDING;
-        uint8_t *nb = (uint8_t *)realloc(v->au_buf, nc);
-        if (!nb) { VI_LOGE(TAG, "OOM au buf"); return -1; }
-        v->au_buf = nb; v->au_cap = nc;
+    if (len + AU_PADDING > v->au_cap) {
+        v->errors++;
+        v->last_err = -1;
+        VI_LOGE(TAG, "AU too big for ES buffer: %u > %u",
+                (unsigned)(len + AU_PADDING), (unsigned)v->au_cap);
+        return -1;
     }
     memcpy(v->au_buf, au, len);
     memset(v->au_buf + len, 0, AU_PADDING);
@@ -231,8 +251,9 @@ void vi_vdec_destroy(vi_vdec *v)
         sceAvcdecDeleteDecoder(&v->decoder);
     if (v->block >= 0)
         sceKernelFreeMemBlock(v->block);
+    if (v->au_block >= 0)
+        sceKernelFreeMemBlock(v->au_block);
     if (v->inited_lib)
         sceVideodecTermLibrary(SCE_VIDEODEC_TYPE_HW_AVCDEC);
-    free(v->au_buf);
     free(v);
 }
