@@ -378,7 +378,21 @@ Two follow-ups from that run:
    (pace only on a displayed frame, by the PTS delta) so normal playback runs
    at the stream's real frame rate and a bad stretch is plowed through quickly.
    The demuxer's PID-following (ad splices) is kept; the fragile decode-side
-   recovery is gone. HUD shows `buf N/M` (queue depth).
+   recovery is gone. HUD shows `buf N/M` (queue depth). Result: buffer fills and
+   holds; the download-gap freezes are gone.
+
+5. **Decoder LEVEL ceiling, for real (build 10).** With buffering smooth, the
+   remaining fault was **bottom-of-frame artifacts**. The log showed `sceAvcdec`
+   INVALID_STREAM on *large* AUs (e.g. a 169 KB keyframe) while small ones
+   passed, `avail` never the limit. That is the signature of exceeding the
+   decoder's H.264 **level**: the stream is 720p at **level 4.1**, but the Vita
+   decoder is effectively ~**level 3.1**, so level-4.1-sized frames overrun it
+   and come back partially decoded (garbage in the lower macroblock rows), which
+   then propagates through the following P-frames. `ffmpeg` (full level) decodes
+   the same AUs cleanly - why offline tests were fine. This is exactly the
+   720p/L3.1 ceiling the brief flagged. Fix: default `CEIL_W/CEIL_H` to
+   **960x540**, within level 3.1, ~half the frame size, and ~1:1 with the
+   960x544 screen. 720p can be revisited per stream.
 
 ### Logging to a file
 

@@ -36,13 +36,21 @@
 #include "vi_http.h"
 #include "vi_vdec.h"
 
-#define BUILD_NUM "9"
+#define BUILD_NUM "10"
 
 #define MASTER_URL \
     "https://failarmy-international-gb.samsung.wurl.tv/playlist.m3u8"
 
-#define CEIL_W 1280
-#define CEIL_H 720
+/*
+ * Decoder ceiling / preferred max variant. The Vita's hardware H.264 decoder is
+ * effectively ~level 3.1: 720p at level 4.1 (what this stream sends) produces
+ * frames too large/complex, so big keyframes decode only partially and leave
+ * garbage in the lower macroblock rows (bottom-of-frame artifacts). 540p is
+ * comfortably within limits and scales ~1:1 to the 960x544 screen. Raise back
+ * toward 1280x720 only if a given stream/decoder proves it handles it.
+ */
+#define CEIL_W 960
+#define CEIL_H 540
 #define FRAME_PACING_US 30000  /* ~33 fps playback pacing */
 
 #define SCREEN_W 960
